@@ -23,7 +23,7 @@ void close_files (int * fds, int n) {
 }
 
 bool check_duplicates (file_identifier * fis, int n) {
-    for (int i = 0; i < n; ++i ) {
+    for (int i = 0; i < n; ++ i ) {
         for (int j = i + 1; j < n; ++ j) {
             if ((fis [i].device == fis [j].device) && (fis [i].inode == fis [j].inode)) {
                 return true;
@@ -43,7 +43,26 @@ bool is_standard_output (int fd) {
     return (fd_stat.st_dev == stdout_stat.st_dev) && (fd_stat.st_ino == stdout_stat.st_ino);
 }
 
-int main(int argc, char * argv [ ]) {
+ssize_t safe_write (int fd, const void * buf, size_t count) {
+    ssize_t bytes_written = 0;
+    ssize_t result;
+
+    while (bytes_written < count) {
+        result = write (fd, (const char *) buf + bytes_written, count - bytes_written);
+
+        if (result < 0 || errno != 0) {
+            perror ("write");
+            return -1;
+        } else {
+            bytes_written += result;
+        }
+    }
+
+    return bytes_written;
+}
+
+
+int main (int argc, char * argv [ ]) {
     if (argc < 4) {
         fprintf (stderr, "Usage: %s input_file output_file1 output_file2 [...]\n", argv [0]);
         return 2;
@@ -145,21 +164,56 @@ int main(int argc, char * argv [ ]) {
         return 1;
     }
 
-    while ((read_len = read (input_fd, xor, BLOCK_SIZE)) > 0) {
+    while (true) {
+        read_len = read (input_fd, xor, BLOCK_SIZE);
+
+        if (read_len < 0 || errno != 0) {
+            if (errno != 0) {
+                perror ("Error reading input file");
+            } else {
+                fprintf (stderr, "Error: read () returned a negative value but errno was not set\n");
+            }
+            close (urandom_fd);
+            close_files (output_fds, n);
+            close (input_fd);
+            free (xor);
+            return 1;
+        } else if (read_len == 0) {
+            break;
+        }
+
         remaining_bytes = read_len;
 
         while (remaining_bytes < BLOCK_SIZE) {
             ssize_t extra_read = read (input_fd, xor + remaining_bytes, BLOCK_SIZE - remaining_bytes);
-            if (extra_read <= 0) break;
+
+            if (extra_read < 0 || errno != 0) {
+                if (errno != 0) {
+                    perror ("Error reading input file");
+                } else {
+                    fprintf (stderr, "Error: read () returned a negative value but errno was not set\n");
+                }
+                close (urandom_fd);
+                close_files (output_fds, n);
+                close (input_fd);
+                free (xor);
+                return 1;
+            } else if (extra_read == 0) {
+                break;
+            }
+
             remaining_bytes += extra_read;
         }
 
         for (int i = 0; i < n - 1; ++ i) {
-            ssize_t urandom_read = read (urandom_fd, staging, BLOCK_SIZE);
+            ssize_t urandom_read = read (urandom_fd, staging, remaining_bytes);
+            if (errno != 0) { perror ("read"); }
+
             ssize_t remaining_urandom = urandom_read;
 
-            while (remaining_urandom < BLOCK_SIZE) {
-                ssize_t extra_urandom = read (urandom_fd, staging + remaining_urandom, BLOCK_SIZE - remaining_urandom);
+            while (remaining_urandom < remaining_bytes) {
+                ssize_t extra_urandom = read (urandom_fd, staging + remaining_urandom, remaining_bytes - remaining_urandom);
+                if (errno != 0) { perror ("read"); }
 
                 if (extra_urandom <= 0)
                     break;
@@ -171,7 +225,7 @@ int main(int argc, char * argv [ ]) {
                 xor [j] ^= staging [j];
             }
 
-            if (write (output_fds [i], staging, remaining_bytes) != remaining_bytes) {
+            if (safe_write (output_fds [i], staging, remaining_bytes) < 0) {
                 perror ("Error writing to output file");
                 close (urandom_fd);
                 close_files (output_fds, n);
@@ -181,7 +235,7 @@ int main(int argc, char * argv [ ]) {
             }
         }
 
-        if (write (output_fds [n - 1], xor, remaining_bytes) != remaining_bytes) {
+        if (safe_write (output_fds [n - 1], xor, remaining_bytes) < 0) {
             perror ("Error writing to output file");
             close (urandom_fd);
             close_files (output_fds, n);

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 const size_t BLOCK_SIZE = 65536;
 
@@ -19,6 +20,17 @@ bool is_standard_input (int fd) {
 
     return    (fd_stat.st_dev == stdin_stat.st_dev)
            && (fd_stat.st_ino == stdin_stat.st_ino);
+}
+
+void free_resources (int * input_fds, int n, int output_fd, unsigned char * buffer) {
+    for (int j = 0; j < n; ++ j) {
+        close (input_fds [j]);
+    }
+
+    free (input_fds);
+    memset (buffer, 0, 2 * BLOCK_SIZE);
+    free (buffer);
+    close (output_fd);
 }
 
 int main (int argc, char * argv [ ]) {
@@ -86,40 +98,97 @@ int main (int argc, char * argv [ ]) {
         return 1;
     }
 
-    ssize_t bytes_read;
+    ssize_t bytes_read = 0;
     unsigned char * stage = buffer + BLOCK_SIZE;
-    while ((bytes_read = read (input_fds [0], buffer, BLOCK_SIZE)) > 0) {
-        for (int i = 1; i < n; ++i) {
-            ssize_t input_bytes_read = read (input_fds [i], stage, BLOCK_SIZE);
+
+    while (true) {
+        bytes_read = 0;
+        ssize_t remaining_bytes = BLOCK_SIZE;
+
+        while (remaining_bytes > 0) {
+            ssize_t extra_read = read (input_fds [0], buffer + bytes_read, remaining_bytes);
+
+            if (extra_read < 0 || errno != 0) {
+                if (errno != 0) {
+                    perror ("Error reading input file");
+                } else {
+                    fprintf (stderr, "Error: read () returned a negative value but errno was not set\n");
+                }
+
+                break;
+            } else if (extra_read == 0) {
+                break;
+            }
+
+            bytes_read += extra_read;
+            remaining_bytes -= extra_read;
+        }
+
+        if (bytes_read == 0) {
+            break;
+        }
+
+        for (int i = 1; i < n; ++ i) {
+            ssize_t input_bytes_read = 0;
+            remaining_bytes = bytes_read;
+
+            while (remaining_bytes > 0) {
+                ssize_t extra_read = read (input_fds [i], stage + input_bytes_read, remaining_bytes);
+
+                if (extra_read < 0 || errno != 0) {
+                    if (errno != 0) {
+                        perror ("Error reading input file");
+                    } else {
+                        fprintf (stderr, "Error: read () returned a negative value but errno was not set\n");
+                    }
+
+                    free_resources (input_fds, n, output_fd, buffer);
+                    return 1;
+                } else if (extra_read == 0) {
+                    break;
+                }
+
+                input_bytes_read += extra_read;
+                remaining_bytes -= extra_read;
+            }
 
             if (input_bytes_read != bytes_read) {
                 fprintf (stderr, "Error: input files have different lengths\n");
-                for (int j = 0; j < n; ++ j) { close (input_fds [j]); }
-                free (input_fds);
-                memset (buffer, 0, 2 * BLOCK_SIZE);
-                free (buffer);
-                close (output_fd);
+                free_resources (input_fds, n, output_fd, buffer);
+                return 3;
+            }
+
+            for (ssize_t j = 0; j < bytes_read; ++ j) {
+                buffer [j] ^= stage [j];
+            }
+        }
+
+        ssize_t bytes_written = 0;
+        remaining_bytes = bytes_read;
+
+        while (remaining_bytes > 0) {
+            ssize_t written = write (output_fd, buffer + bytes_written, remaining_bytes);
+
+            if (written < 0 || errno != 0) {
+                if (errno != 0) {
+                    perror ("Error writing to output file");
+                } else {
+                    fprintf (stderr, "Error: write () returned a negative value but errno was not set\n");
+                }
+
+                free_resources (input_fds, n, output_fd, buffer);
                 return 1;
             }
 
-            for (ssize_t j = 0; j < bytes_read; ++j) { buffer [j] ^= stage [j]; }
-        }
-
-        if (write (output_fd, buffer, bytes_read) != bytes_read) {
-            perror ("Error writing to output file");
-            for (int i = 0; i < n; ++ i) { close (input_fds [i]); }
-            free (input_fds);
-            memset (buffer, 0, 2 * BLOCK_SIZE);
-            free (buffer);
-            close (output_fd);
-            return 1;
+            bytes_written += written;
+            remaining_bytes -= written;
         }
 
         memset (buffer, 0, 2 * BLOCK_SIZE);
     }
 
     if (bytes_read < 0) { perror ("Error reading from input file"); }
-    for (int i = 0; i < n; ++i) { close (input_fds [i]); }
+    for (int i = 0; i < n; ++ i) { close (input_fds [i]); }
 
     free (input_fds);
     free (buffer);
