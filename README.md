@@ -9,7 +9,7 @@ To build and install:
   # make install
 ```
 
-A `PREFIX` may be provided to the `make` argument.
+A `PREFIX` may be provided to the `make install` target.
 
 ## Usage
 
