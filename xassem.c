@@ -188,10 +188,24 @@ int main (int argc, char * argv [ ]) {
     }
 
     if (bytes_read < 0) { perror ("Error reading from input file"); }
+
+    for (int i = 0; i < n; ++ i) {
+        if (read (input_fds [i], buffer, 1) != 0) {
+            fprintf (stderr, "Error: input files have different lengths\n");
+            free_resources (input_fds, n, output_fd, buffer);
+            return 3;
+        }
+
+        if (errno != 0) {
+            perror ("Error when checking length consistency");
+        }
+    }
+
     for (int i = 0; i < n; ++ i) { close (input_fds [i]); }
 
     free (input_fds);
     free (buffer);
+    buffer = (unsigned char *) (NULL);
     close (output_fd);
 
     return 0;
